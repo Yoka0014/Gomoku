@@ -88,6 +88,9 @@ class Position:
     def winner(self) -> IntersectionState:
         """勝者. 終局していない場合はIntersectionState.EMPTY"""
         return self.__winner
+    
+    def get_board_as_numpy(self) -> np.ndarray:
+        return self.__board_numpy
 
     def copy_to(self, dest):
         """コピー先に現在の盤面をdeep copyする
@@ -110,8 +113,9 @@ class Position:
         dest.__empties = self.__empties
         dest.__empty_count = self.__empty_count
         dest.__winner = self.__winner
-        if self.__board_numpy is not None:
-            dest.__board_numpy[:, :, :] = self.__board_numpy[:, :, :]
+        if dest.__board_numpy is not None:
+            assert self.__board_numpy is not None
+            dest.__board_numpy = np.copy(self.__board_numpy)
 
     def copy(self) -> 'Position':
         new_pos = Position(self.__size, nn_input=(self.__board_numpy is not None))

@@ -4,7 +4,7 @@
 アルゴリズムにはUCT(Upper Confidence Bound for Trees)を用いる．
 UCTでは, ノード選択にUCB1を, 局面評価には一様ランダムな方策によるシミュレーションを用いる．
 """
-
+import time
 import math
 import random
 import array
@@ -17,12 +17,6 @@ import numpy as np
 from gomoku import Position, IntersectionState
 
 
-class EdgeLabel(IntEnum):
-    WIN = 1
-    LOSS = 0
-    INTERMIDIATE = -1
-
-
 class Node:
     def __init__(self):
         self.visit_count = 0
@@ -30,7 +24,6 @@ class Node:
         self.moves: list[int] = None
 
         # 子ノード関連の情報
-        self.edge_labels: array.array = None
         self.child_visit_counts: np.ndarray = None
         self.child_value_sums: np.ndarray = None
         self.child_nodes: list[Node] = None
@@ -51,7 +44,7 @@ class Node:
         assert self.visit_count > 0
         return self.value_sum / self.visit_count
     
-    def init_child_nodes(self, moves):
+    def init_child_nodes(self):
         """
         子ノードのリストを初期化する.
         """
@@ -76,7 +69,6 @@ class Node:
         # 子ノードの訪問回数と価値の合計を初期化
         # 実際にその子ノードに訪問する必要があるまでNodeオブジェクトは生成しない
         num_nodes = len(self.moves)
-        self.edge_labels = array.array('b', [EdgeLabel.INTERMIDIATE] * num_nodes)
         self.child_visit_counts = np.zeros(num_nodes, dtype=np.int32)
         self.child_value_sums = np.zeros(num_nodes, dtype=np.double)   
 
@@ -105,7 +97,6 @@ class SearchResult:
 class UCTConfig:
     expansion_threshold: int = 20  # 子ノードを展開閾値
     ucb_factor: float = math.sqrt(2.0)  # UCB1の係数（デフォルトは理論値のsqrt(2)）
-    reuse_subtree: bool = True  # 可能なら前回の探索結果を利用する
 
 
 class Searcher:
@@ -128,13 +119,13 @@ class Searcher:
     def __init__(self, config: UCTConfig):
         self.__EXPAND_THRES = config.expansion_threshold
         self.__C_UCB = config.ucb_factor
-        self.__REUSE_SUBTREE = config.reuse_subtree
 
         self.__simulation_count = 0
         self.__search_start_ms = 0
         self.__search_end_ms = 0
 
         self.__root_pos: Position = None
+        self.__root_prev_move: int = None
         self.__root: Node = None
 
     @property
@@ -161,11 +152,201 @@ class Searcher:
             prev_move (int): 直前の手
             prev_prev_move (int): 2手前の手
         """
-        prev_root_pos = self.__root_pos
         self.__root_pos = pos.copy()
+        self.__root_prev_move = prev_move
+        self.__root = Node()
+        self.__init_root_child_node(prev_move, prev_prev_move)
+        gc.collect()
 
+    def try_update_root_pos(self, move: int) -> bool:
+        """ルート局面を更新する"""
+        if self.__root_pos is None:
+            return False
+
+        if not self.__root.is_expanded or move not in self.__root.moves or self.__root.child_nodes is None:
+            return False
+
+        for m, node in zip(self.__root.moves, self.__root.child_nodes):
+            if m == move:
+                if node is None or not node.is_expanded:
+                    return False
+                
+                self.__root_pos.update(move)
+                self.__root_prev_move = move
+                self.__root = node
+
+        gc.collect()
+
+        return True
         
+    def search(self, max_simulation_count: int, time_limit_ms: int) -> SearchResult:
+        root_pos = self.__root_pos
+        pos = root_pos.copy()
+        self.__search_start_ms = int(time.perf_counter() * 1000)
+        for _ in range(max_simulation_count):
+            current_time_ms = int(time.perf_counter() * 1000)
+            if time_limit_ms > 0 and current_time_ms - self.__search_start_ms >= time_limit_ms:
+                break
 
+            root_pos.copy_to(pos)
+            self.__visit_root_node(pos)
+            self.__simulation_count += 1
 
+        self.__search_end_ms = int(time.perf_counter() * 1000)
+        return self.__collect_search_result()
+
+    def __collect_search_result(self) -> SearchResult:
+        root = self.__root
+        move_evals = []
+
+        if root.visit_count > 0:
+            root_value = MoveEval(
+                move=-1,
+                effort=1.0,
+                simulation_count=root.visit_count,
+                value=root.value_sum / root.visit_count
+            )
+
+        if root.is_expanded:
+            for i, move in enumerate(root.moves):
+                if root.child_nodes[i] is None:
+                    continue
+
+                node = root.child_nodes[i]
+                if node.visit_count > 0:
+                    value = node.value_sum / node.visit_count
+                    effort = node.visit_count / root.visit_count
+                    move_eval = MoveEval(move, effort, node.visit_count, value)
+                    move_evals.append(move_eval)
+
+        return SearchResult(root_value, move_evals)
+
+    def __init_root_child_node(self, prev_move: int, prev_prev_move: int):
+        pos: Position = self.__root_pos
+        root: Node = self.__root
+
+        if not root.is_expanded:
+            root.expand(pos, prev_move, prev_prev_move)
+
+        if root.child_nodes is None:
+            root.init_child_nodes()
+
+        for i in range(root.num_child_nodes):
+            if root.child_nodes[i] is None:
+                root.child_nodes[i] = Node()
+
+    def __visit_root_node(self, pos: Position):
+        node = self.__root
+        child_idx = self.__select_root_child_node()
+        move = node.moves[child_idx]
+        pos.update(move)
+        self.__update_stats(node, child_idx, self.__visit_node(pos, node.child_nodes[child_idx], move, self.__root_prev_move))
+
+    def __visit_node(self, pos: Position, node: Node, prev_move: int, prev_prev_move: int) -> float:
+        if not node.is_expanded:
+            node.expand(pos, prev_move, prev_prev_move)
+
+        if node.num_child_nodes == 1:
+            # 勝敗を決定できる.
+            pos.update(node.moves[0])
+            if pos.winner == IntersectionState.EMPTY:
+                return 0.5
+            
+            # 勝敗は反転して返す
+            return 0.0 if pos.winner == pos.side_to_move else 1.0
+
+        child_idx = self.__select_child_node(node)
+        move = node.moves[child_idx]
+        pos.update(move)
+
+        if node.child_visit_counts[child_idx] < self.__EXPAND_THRES:
+            # 子ノードが展開閾値に達していない場合はrolloutを行う
+            value = 1.0 - self.__rollout(pos)
+            self.__update_stats(node, child_idx, value)
+            return value
+        
+        if node.child_nodes is None:
+            node.init_child_nodes()
+        
+        if node.child_nodes[child_idx] is None:
+            node.child_nodes[child_idx] = Node()
+
+        child_node = node.child_nodes[child_idx]
+        value = 1.0 - self.__visit_node(pos, child_node, move, prev_move)
+        self.__update_stats(node, child_idx, value)
+        return value
+        
+    def __select_root_child_node(self) -> int:
+        """UCB1に基づいてルートノードの子ノードを選択する"""
+        parent = self.__root
+        visit_sum = parent.visit_count
+        not_visit_count = np.sum(parent.child_visit_counts == 0)
+        log_sum = math.log(visit_sum + not_visit_count)
+
+        # 行動価値の計算
+        # ただし，未訪問子ノードはFPUで初期化.
+        q = np.divide(parent.child_value_sums, parent.child_visit_counts,
+                      out=np.full(parent.num_child_nodes, self.__ROOT_FPU, np.double), where=parent.child_visit_counts != 0)
+        
+        # バイアス項の計算
+        u = np.divide(log_sum, parent.child_visit_counts,
+                      out=np.full(parent.num_child_nodes, 1, np.double), where=parent.child_visit_counts != 0)
+        np.sqrt(u, out=u)
+
+        return np.argmax(q + self.__C_UCB * u)
+
+    def __select_child_node(self, parent: Node) -> int:
+        visit_sum = parent.visit_count
+        not_visit_count = np.sum(parent.child_visit_counts == 0)
+        log_sum = math.log(visit_sum + not_visit_count)
+
+        # 未訪問ノードの価値は親ノードの価値で初期化する．
+        # そもそも全ての子ノードが未訪問の時は1で初期化する．
+        # その場合，np.argmaxの仕様から0番目の子ノードが選ばれることになる．
+        fpu = parent.value_sum / visit_sum if visit_sum > 0 else 1
+
+        # 行動価値の計算
+        # ただし，未訪問子ノードはFPUで初期化.
+        q = np.divide(parent.child_value_sums, parent.child_visit_counts,
+                      out=np.full(parent.num_child_nodes, fpu, np.double), where=parent.child_visit_counts != 0)
+        
+        # バイアス項の計算
+        u = np.divide(log_sum, parent.child_visit_counts,
+                      out=np.full(parent.num_child_nodes, 1, np.double), where=parent.child_visit_counts != 0)
+        np.sqrt(u, out=u)
+
+        return np.argmax(q + self.__C_UCB * u)
     
+    def __rollout(self, pos: Position) -> float:
+        """ランダムロールアウトを行い，局面の価値を推定する
 
+        元々, この処理のことをMCTSではplayoutと呼ぶのが一般的だが,
+        対局シミュレーションによる価値の推定は, 強化学習におけるrolloutと同じなので
+        ここではrolloutと呼ぶことにする.
+
+        Args:
+            pos (Position): 現在の局面
+
+        Returns:
+            float: 勝敗(win=1.0, loss=0.0, draw=0.5)
+        """
+        root_side = pos.side_to_move
+        empties = list(pos.enumerate_empties())
+        random.shuffle(empties)
+
+        for move in empties:
+            pos.update(move)
+            if pos.winner != IntersectionState.EMPTY:
+                break
+
+        if pos.winner == IntersectionState.EMPTY:
+            return 0.5
+
+        return 1.0 if pos.winner == root_side else 0.0
+
+    def __update_stats(self, parent: Node, child_idx: int, value: float):
+        """ノードの統計情報を更新する"""
+        parent.visit_count += 1
+        parent.value_sum += value
+        parent.child_visit_counts[child_idx] += 1
+        parent.child_value_sums[child_idx] += value
