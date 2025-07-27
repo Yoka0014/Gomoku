@@ -31,13 +31,13 @@ class Node:
     @property
     def is_expanded(self) -> bool:
         """子ノードが展開されているか"""
-        return self.child_nodes is not None
+        return self.moves is not None
     
     @property
     def num_child_nodes(self) -> int:
         """子ノードの数"""
-        return len(self.child_nodes) if self.is_expanded else 0
-    
+        return len(self.moves)
+
     @property
     def value(self) -> float:
         """ノードの価値"""
@@ -89,14 +89,14 @@ class SearchResult:
     """
     探索の結果
     """
-    root_value: MoveEval = MoveEval()   # ルート局面の価値
-    move_evals: list[MoveEval] = [] # 各着手の価値
+    root_value: MoveEval
+    move_evals: list[MoveEval]
 
 
 @dataclass
 class UCTConfig:
-    expansion_threshold: int = 20  # 子ノードを展開閾値
-    ucb_factor: float = math.sqrt(2.0)  # UCB1の係数（デフォルトは理論値のsqrt(2)）
+    expansion_threshold: int = 1  # 子ノードを展開閾値
+    ucb_factor: float = 0.5  # UCB1の係数（デフォルトは理論値のsqrt(2)）
 
 
 class Searcher:
@@ -144,7 +144,7 @@ class Searcher:
         elapsed_sec = self.elapsed_ms * 10**-3  
         return self.simulation_count / elapsed_sec if elapsed_sec > 0 else 0.0
     
-    def set_root_pos(self, pos: Position, prev_move: int, prev_prev_move: int):
+    def set_root_pos(self, pos: Position, prev_move: int=-1, prev_prev_move: int=-1):
         """探索のルート局面を設定する
 
         Args:
@@ -152,6 +152,14 @@ class Searcher:
             prev_move (int): 直前の手
             prev_prev_move (int): 2手前の手
         """
+        # 以前の着手位置が不明な場合は中央の座標を使用する
+        center_coord = pos.size // 2 + (pos.size // 2) * pos.size
+        if prev_move == -1:
+            prev_move = center_coord
+
+        if prev_prev_move == -1:
+            prev_prev_move = center_coord
+
         self.__root_pos = pos.copy()
         self.__root_prev_move = prev_move
         self.__root = Node()
@@ -166,6 +174,7 @@ class Searcher:
         if not self.__root.is_expanded or move not in self.__root.moves or self.__root.child_nodes is None:
             return False
 
+        prev_prev_move = self.__root_prev_move
         for m, node in zip(self.__root.moves, self.__root.child_nodes):
             if m == move:
                 if node is None or not node.is_expanded:
@@ -175,6 +184,7 @@ class Searcher:
                 self.__root_prev_move = move
                 self.__root = node
 
+        self.__init_root_child_node(self.__root_prev_move, prev_prev_move)
         gc.collect()
 
         return True
@@ -183,6 +193,7 @@ class Searcher:
         root_pos = self.__root_pos
         pos = root_pos.copy()
         self.__search_start_ms = int(time.perf_counter() * 1000)
+        self.__simulation_count = 0
         for _ in range(max_simulation_count):
             current_time_ms = int(time.perf_counter() * 1000)
             if time_limit_ms > 0 and current_time_ms - self.__search_start_ms >= time_limit_ms:
@@ -212,12 +223,10 @@ class Searcher:
                 if root.child_nodes[i] is None:
                     continue
 
-                node = root.child_nodes[i]
-                if node.visit_count > 0:
-                    value = node.value_sum / node.visit_count
-                    effort = node.visit_count / root.visit_count
-                    move_eval = MoveEval(move, effort, node.visit_count, value)
-                    move_evals.append(move_eval)
+                value = root.child_value_sums[i] / root.child_visit_counts[i] if root.child_visit_counts[i] > 0 else 0.0
+                effort = root.child_visit_counts[i] / root.visit_count
+                move_eval = MoveEval(move, effort, root.child_visit_counts[i], value)
+                move_evals.append(move_eval)
 
         return SearchResult(root_value, move_evals)
 
@@ -240,7 +249,13 @@ class Searcher:
         child_idx = self.__select_root_child_node()
         move = node.moves[child_idx]
         pos.update(move)
-        self.__update_stats(node, child_idx, self.__visit_node(pos, node.child_nodes[child_idx], move, self.__root_prev_move))
+
+        if pos.winner != IntersectionState.EMPTY:
+            value = 0.0 if pos.winner == pos.side_to_move else 1.0
+        else:
+            value = 1 - self.__visit_node(pos, node.child_nodes[child_idx], move, self.__root_prev_move)
+
+        self.__update_stats(node, child_idx, value)
 
     def __visit_node(self, pos: Position, node: Node, prev_move: int, prev_prev_move: int) -> float:
         if not node.is_expanded:
@@ -258,6 +273,11 @@ class Searcher:
         child_idx = self.__select_child_node(node)
         move = node.moves[child_idx]
         pos.update(move)
+
+        if pos.winner != IntersectionState.EMPTY:
+            value = 0.0 if pos.winner == pos.side_to_move else 1.0
+            self.__update_stats(node, child_idx, value)
+            return value
 
         if node.child_visit_counts[child_idx] < self.__EXPAND_THRES:
             # 子ノードが展開閾値に達していない場合はrolloutを行う
@@ -290,7 +310,7 @@ class Searcher:
         
         # バイアス項の計算
         u = np.divide(log_sum, parent.child_visit_counts,
-                      out=np.full(parent.num_child_nodes, 1, np.double), where=parent.child_visit_counts != 0)
+                      out=np.full(parent.num_child_nodes, log_sum, np.double), where=parent.child_visit_counts != 0)
         np.sqrt(u, out=u)
 
         return np.argmax(q + self.__C_UCB * u)
@@ -312,7 +332,7 @@ class Searcher:
         
         # バイアス項の計算
         u = np.divide(log_sum, parent.child_visit_counts,
-                      out=np.full(parent.num_child_nodes, 1, np.double), where=parent.child_visit_counts != 0)
+                      out=np.full(parent.num_child_nodes, log_sum, np.double), where=parent.child_visit_counts != 0)
         np.sqrt(u, out=u)
 
         return np.argmax(q + self.__C_UCB * u)

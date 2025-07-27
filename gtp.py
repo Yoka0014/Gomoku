@@ -6,16 +6,7 @@ import datetime
 import gomoku
 from gomoku import Position, IntersectionState
 from engine import Engine
-
-class GTPError(Exception):
-
-    """GTPエラー"""
-    def __init__(self, message: str):
-        super().__init__(message)
-        self.message = message
-
-    def __str__(self):
-        return f"GTPError: {self.message}"
+from error import GTPError
 
 class GTP:
     VERSION = "2.0"
@@ -216,11 +207,12 @@ class GTP:
             return
         
         color = self.__parse_color(args[0])
-        if color == IntersectionState.EMPTY:
+        if color != self.__engine.get_side_to_move():
             self.failure(id, "invalid color")
             return
         
-        coord = self.__engine.gen_move(color)
+        coord = self.__engine.gen_move()
+        self.__engine.play(color, coord)
         self.success(id, self.__coord_to_str(coord))
 
     def __exec_reg_gen_move_command(self, id: int | None, args: list[str]):
@@ -234,7 +226,7 @@ class GTP:
             self.failure(id, "invalid color")
             return
         
-        coord = self.__engine.reg_gen_move(color)
+        coord = self.__engine.gen_move(color)
         self.success(id, self.__coord_to_str(coord))
 
     def __exec_undo_command(self, id: int | None, args: list[str]):
@@ -327,7 +319,7 @@ class GTP:
         """現在の盤面における合法手を取得するコマンド"""
         
         moves = []
-        if self.__engine._pos.winner == IntersectionState.EMPTY:
+        if self.__engine._pos.winner == IntersectionState.EMPTY and self.__engine._pos.empty_count > 0:
             moves = [self.__coord_to_str(coord) for coord in self.__engine.get_legal_moves()]
 
         if(len(moves) != 0):
@@ -365,7 +357,7 @@ class GTP:
         if coord == "pass":
             return gomoku.PASS_COORD
 
-        if len(coord) != 2:
+        if len(coord) < 2:
             return -1
         
         x = ord(coord[0]) - ord('a')
@@ -374,7 +366,7 @@ class GTP:
         if coord[0] > 'i':
             x -= 1
 
-        y = int(coord[1])
+        y = int(coord[1:])
         y = self.__engine.board_size - y
         return x + y * self.__engine.board_size
     

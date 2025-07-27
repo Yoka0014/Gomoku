@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 
 import gomoku
 from gomoku import Position, IntersectionState
+from error import GTPError
 
 class Engine(ABC):
     """思考エンジン(AI)の抽象基底クラス"""
@@ -11,7 +12,7 @@ class Engine(ABC):
         self.__name = name
         self.__version = version
         self._pos = Position(9)
-        self.__move_history: list[(IntersectionState, int)] = []
+        self._move_history: list[(IntersectionState, int)] = []
     
     @property
     def name(self) -> str:
@@ -35,7 +36,7 @@ class Engine(ABC):
     def clear_board(self):
         """盤面をクリアする"""
         self._pos = Position(self.board_size)
-        self.__move_history.clear()
+        self._move_history.clear()
 
     def get_color_at(self, coord: int) -> IntersectionState:
         """指定した座標の交点の状態を取得する"""
@@ -56,7 +57,7 @@ class Engine(ABC):
             self._pos.do_pass()
 
         self._pos.update(coord)
-        self.__move_history.append((color, coord))
+        self._move_history.append((color, coord))
         return True
     
     def show_board(self) -> str:
@@ -65,10 +66,10 @@ class Engine(ABC):
     
     def undo(self) -> bool:
         """直前の手を取り消す"""
-        if not self.__move_history:
+        if not self._move_history:
             return False
         
-        color, last_move = self.__move_history.pop()
+        color, last_move = self._move_history.pop()
 
         if color != self._pos.opponent_color:
             self._pos.do_pass()
@@ -99,7 +100,7 @@ class Engine(ABC):
     
     def exec_original_command(self, cmd: str, args: list[str]) -> str:
         """エンジン固有のコマンドを実行する"""
-        return f"Unknown command: {cmd}"
+        raise GTPError(f"Unknown command: {cmd}")
     
     def set_board_size(self, size: int):
         """盤面のサイズを設定する""" 
@@ -107,17 +108,12 @@ class Engine(ABC):
             return False
         
         self._pos = Position(size)
-        self.__move_history.clear()
+        self._move_history.clear()
         return True
 
     @abstractmethod
     def gen_move(self) -> int:
-        """次の手を決定し着手する"""
-        pass
-
-    @abstractmethod
-    def reg_gen_move(self) -> int:
-        """次の手を決定する．ただし，着手はしない"""
+        """次の手を決定する"""
         pass
 
     def set_time(self, main_time: int, byoyomi: int, byoyomi_stones: int):
