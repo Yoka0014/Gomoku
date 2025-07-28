@@ -7,10 +7,8 @@ UCTでは, ノード選択にUCB1を, 局面評価には一様ランダムな方
 import time
 import math
 import random
-import array
 import gc
 from dataclasses import dataclass
-from enum import IntEnum
 
 import numpy as np
 
@@ -111,10 +109,11 @@ class Searcher:
     Note:
         ルートノード直下の未訪問ノードは全て勝ちと見做す. そうすれば, 1手先の全ての子ノードは初期に少なくとも1回はプレイアウトされる.
 
-        ルートノード直下以外の未訪問ノードは, 親ノードの価値で初期化する. 
-        そうすれば, 親ノードよりも価値の高い子ノードが見つかれば, しばらくそのノードが選ばれ続ける.
+        ルートノード直下以外の未訪問ノードは, 負けで初期化する. 
+        そうすれば, 最初に選ばれたノードがしばらく選ばれ続ける．
     """
     __ROOT_FPU = 1.0
+    __FPU = 0.0
 
     def __init__(self, config: UCTConfig):
         self.__EXPAND_THRES = config.expansion_threshold
@@ -320,16 +319,11 @@ class Searcher:
         not_visit_count = np.sum(parent.child_visit_counts == 0)
         log_sum = math.log(visit_sum + not_visit_count)
 
-        # 未訪問ノードの価値は親ノードの価値で初期化する．
-        # そもそも全ての子ノードが未訪問の時は1で初期化する．
-        # その場合，np.argmaxの仕様から0番目の子ノードが選ばれることになる．
-        fpu = parent.value_sum / visit_sum if visit_sum > 0 else 1
-
         # 行動価値の計算
         # ただし，未訪問子ノードはFPUで初期化.
         q = np.divide(parent.child_value_sums, parent.child_visit_counts,
-                      out=np.full(parent.num_child_nodes, fpu, np.double), where=parent.child_visit_counts != 0)
-        
+                      out=np.full(parent.num_child_nodes, self.__FPU, np.double), where=parent.child_visit_counts != 0)
+
         # バイアス項の計算
         u = np.divide(log_sum, parent.child_visit_counts,
                       out=np.full(parent.num_child_nodes, log_sum, np.double), where=parent.child_visit_counts != 0)
