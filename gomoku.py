@@ -26,6 +26,9 @@ class Position:
     BOARD_SIZE_MAX = 19
     MARGIN = 1  # 盤外判定を容易にするための余白
     SQRT_TABLE = [-1] * (BOARD_SIZE_MAX ** 2 + 1)   # SQRT_TABLE[i ** 2] = i を満たすテーブル.
+    __CREATED_SIZE = [False] * (BOARD_SIZE_MAX + 1)  
+    __MANHATTAN_TABLE_CACHE = {}
+    __PADDED_COORD_CACHE = {}
 
     @staticmethod
     def static_init():
@@ -53,12 +56,21 @@ class Position:
                 self.__board[y * self.__padded_size + j] = IntersectionState.OUT
                 self.__board[(y + 1) * self.__padded_size - j - 1] = IntersectionState.OUT
 
+        if Position.__CREATED_SIZE[size]:
+            self.__TO_PADDED_COORD = Position.__PADDED_COORD_CACHE[size]
+            self.__MANHATTAN_TABLE = Position.__MANHATTAN_TABLE_CACHE[size]
+            return
+        
+        Position.__CREATED_SIZE[size] = True
+
         # 通常の座標を余白も含めた座標に変換するテーブル．
         self.__TO_PADDED_COORD = [0] * (self.__size ** 2)
         for coord in range(self.__size ** 2):
             x = coord % self.__size + Position.MARGIN
             y = coord // self.__size + Position.MARGIN
             self.__TO_PADDED_COORD[coord] = x + y * self.__padded_size
+
+        Position.__PADDED_COORD_CACHE[size] = self.__TO_PADDED_COORD
 
         # マンハッタン距離のテーブル
         # __MANHATTAN_TABLE[i][j] = iとjのマンハッタン距離を表す
@@ -70,6 +82,8 @@ class Position:
                 x1, y1 = j % self.__size, j // self.__size
                 dists[j] = abs(x0 - x1) + abs(y0 - y1)
             self.__MANHATTAN_TABLE.append(dists)
+
+        Position.__MANHATTAN_TABLE_CACHE[size] = self.__MANHATTAN_TABLE
 
     @property
     def size(self) -> int:
@@ -103,7 +117,7 @@ class Position:
         ret = torch.from_numpy(self.__board_numpy)
         if self.__side_to_move == IntersectionState.WHITE:
             ret = ret.flip(0)
-        return ret
+        return ret.clone()
 
     def copy_to(self, dest):
         """コピー先に現在の盤面をdeep copyする
@@ -139,8 +153,8 @@ class Position:
                     else:
                         dest.__board_numpy[:, coord // self.__size, coord % self.__size] = 0.0
 
-    def copy(self) -> 'Position':
-        new_pos = Position(self.__size, nn_input=(self.__board_numpy is not None))
+    def copy(self, copy_numpy=True) -> 'Position':
+        new_pos = Position(self.__size, nn_input=(copy_numpy and self.__board_numpy is not None))
         self.copy_to(new_pos)
         return new_pos
 
@@ -164,6 +178,7 @@ class Position:
             self.__empty_count += 1
 
         if self.__board_numpy is not None:
+            self.__board_numpy.fill(0.0)
             if state == IntersectionState.BLACK:
                 self.__board_numpy[0, coord // self.__size, coord % self.__size] = 1.0
             elif state == IntersectionState.WHITE:
@@ -293,6 +308,22 @@ class Position:
     def calc_manhattan_distance(self, coord_0: int, coord_1: int) -> int:
         """coord1とcoord2のマンハッタン距離を計算する"""
         return self.__MANHATTAN_TABLE[coord_0][coord_1]
+    
+    def to_text_line(self) -> str:
+        line = []
+        for i in range(self.__size):
+            for j in range(self.__size):
+                state = self.get_intersection_state_at(i * self.__size + j)
+                if state == IntersectionState.BLACK:
+                    line.append('X')
+                elif state == IntersectionState.WHITE:
+                    line.append('O')
+                else:
+                    line.append('-')
+
+        line.append(f" {'X' if self.__side_to_move == IntersectionState.BLACK else 'O'}")
+
+        return ''.join(line)
 
     def __str__(self):
         lines = []

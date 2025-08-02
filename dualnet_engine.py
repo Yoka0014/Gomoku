@@ -1,30 +1,23 @@
 import sys
 import math
 
+import torch
 import numpy as np
 
 import gomoku
 from gomoku import Position
 from engine import Engine
 from error import GTPError
-from dqn_train import DQNConfig, Networks, outcome_to_win
-
-# import os 
-# os.chdir("Gomoku")
-
-def softmax(move_evals: tuple[int, float]) -> list[float]:
-    T = 0.1
-    exp_evals = [float(eval) ** (1.0 / T) for _, eval in move_evals]
-    total = sum(exp_evals)
-    return [eval / total for eval in exp_evals]
+from dual_net import DualNet
 
 
+class DualNetEngine(Engine):
+    def __init__(self, board_size: int, model_path: str):
+        super().__init__("PV Network Engine", "1.0")
+        self.__model = DualNet(board_size)
+        self.__board_size = board_size
 
-class QNetworkEngine(Engine):
-    def __init__(self, config: DQNConfig, model_path: str):
-        super().__init__("Q Network Engine", "1.0")
-        self.__network = Networks(config.board_size, config.value_transform, model_path)
-        self.__board_size = config.board_size
+        self.__model.load_state_dict(torch.load(model_path, map_location="cpu"))
 
     def set_board_size(self, size):
         if size != self.__board_size:
@@ -42,21 +35,37 @@ class QNetworkEngine(Engine):
         self._pos.copy_to(pos)
         pos_tensor = pos.to_tensor()
         pos_tensor = pos_tensor.unsqueeze(0)
-        q = self.__network.predict_q(pos_tensor).detach().cpu().numpy()[0]
+
+        with torch.no_grad():
+            self.__model.eval()
+            p, v = self.__model(pos_tensor)
+            p = torch.softmax(p, dim=1)
+            v = torch.sigmoid(v).squeeze(1)
+
         legal_moves = list(self._pos.enumerate_empties())
-        move_evals = [(a, outcome_to_win(q[a])) for a in legal_moves]
+        move_evals = []
+        policy_sum = 0.0
+        for move in legal_moves:
+            policy = p[0, move].item()
+            move_evals.append((move, policy))
+            policy_sum += policy
+
+        for i in range(len(move_evals)):
+            move, policy = move_evals[i]
+            if policy_sum > 0:
+                move_evals[i] = (move, policy / policy_sum)
+            else:
+                move_evals[i] = (move, 1.0 / len(move_evals))
         move_evals.sort(key=lambda x: x[1], reverse=True)
 
-        self.__print_move_evals(move_evals)
-        p = softmax(move_evals)
+        print(f"win_rate: {v.item() * 100.0:.2f}%", file=sys.stderr)
+        self.__print_move_evals(move_evals[:5])
 
-        move = np.random.choice([m for m, _ in move_evals], p=p)
-
-        return int(move)
+        return max(legal_moves, key=lambda a: p[0, a].item())
 
     def __print_move_evals(self, move_evals):
-        for move, eval in move_evals:
-            print(f"Move: {self.__coord_to_str(move)}, WinRate: {eval * 100.0:.2f}%", file=sys.stderr)
+        for move, policy in move_evals:
+            print(f"Move: {self.__coord_to_str(move)}, Policy: {policy * 100.0:.2f}%", file=sys.stderr)
 
     def __coord_to_str(self, coord: int) -> str:
         if coord == gomoku.PASS_COORD:
@@ -80,7 +89,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         protocol = sys.argv[1]
 
-    engine = QNetworkEngine(DQNConfig(), "..\\params\\DQN\\dqn_model_39999.pth")
+    engine = DualNetEngine(9, "params\\DualNet\\dualnet.pth")
     if protocol == "gtp":
         gtp = GTP(engine)
         gtp.mainloop("gtp.log")

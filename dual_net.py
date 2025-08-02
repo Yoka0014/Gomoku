@@ -79,3 +79,42 @@ class DualNet(nn.Module):
             elif isinstance(layer, nn.Linear):
                 nn.init.xavier_uniform_(layer.weight)
                 nn.init.constant_(layer.bias, 0)
+
+    def init_action_head_weights(self):
+        nn.init.kaiming_normal_(self.action_conv.weight, mode='fan_out', nonlinearity='relu')
+        nn.init.constant_(self.action_bn.weight, 1)
+        nn.init.constant_(self.action_bn.bias, 0)
+        nn.init.kaiming_normal_(self.action_head_conv.weight, mode='fan_out', nonlinearity='relu')
+        nn.init.constant_(self.action_head_bn.weight, 1)
+        nn.init.constant_(self.action_head_bn.bias, 0)
+
+    def init_value_head_weights(self):
+        nn.init.kaiming_normal_(self.value_conv.weight, mode='fan_out', nonlinearity='relu')
+        nn.init.constant_(self.value_bn.weight, 1)
+        nn.init.constant_(self.value_bn.bias, 0)
+        nn.init.xavier_uniform_(self.value_linear.weight)
+        nn.init.constant_(self.value_linear.bias, 0)
+        nn.init.xavier_uniform_(self.value_head.weight)
+        nn.init.constant_(self.value_head.bias, 0)
+
+    def fix_shared_weights(self):
+        """
+        action head とvalue head以外の重みを固定する.
+        """
+        for param in self.conv_0.parameters():
+            param.requires_grad = False
+
+        for param in self.bn_0.parameters():
+            param.requires_grad = False
+
+        for layer in self.hidden_layers:
+            for param in layer.parameters():
+                param.requires_grad = False
+
+    def unfix_shared_weights(self):
+        for param in self.conv_0.parameters():
+            param.requires_grad = True
+
+        for layer in self.hidden_layers:
+            for param in layer.parameters():
+                param.requires_grad = True
