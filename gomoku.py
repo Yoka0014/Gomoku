@@ -2,6 +2,7 @@ from enum import IntEnum
 import array
 
 import numpy as np
+import torch
 
 
 PASS_COORD = -2  # パスを意味する座標
@@ -12,6 +13,11 @@ class IntersectionState(IntEnum):
     WHITE = 1
     EMPTY = 2
     OUT = 3
+
+
+def to_opponent_color(color: IntersectionState) -> IntersectionState:
+    assert color in (IntersectionState.BLACK, IntersectionState.WHITE), "Invalid color"
+    return color ^ IntersectionState.WHITE
 
 
 class Position:
@@ -89,8 +95,15 @@ class Position:
         """勝者. 終局していない場合はIntersectionState.EMPTY"""
         return self.__winner
     
-    def get_board_as_numpy(self) -> np.ndarray:
-        return self.__board_numpy
+    @property
+    def is_gameover(self) -> bool:
+        return self.__winner != IntersectionState.EMPTY or self.__empty_count == 0
+    
+    def to_tensor(self) -> torch.Tensor:
+        ret = torch.from_numpy(self.__board_numpy)
+        if self.__side_to_move == IntersectionState.WHITE:
+            ret = ret.flip(0)
+        return ret
 
     def copy_to(self, dest):
         """コピー先に現在の盤面をdeep copyする
@@ -114,8 +127,17 @@ class Position:
         dest.__empty_count = self.__empty_count
         dest.__winner = self.__winner
         if dest.__board_numpy is not None:
-            assert self.__board_numpy is not None
-            dest.__board_numpy = np.copy(self.__board_numpy)
+            if self.__board_numpy is not None:
+                dest.__board_numpy = np.copy(self.__board_numpy)
+            else:
+                for coord in range(self.__size ** 2):
+                    state = self.get_intersection_state_at(coord)
+                    if state == IntersectionState.BLACK:
+                        dest.__board_numpy[0, coord // self.__size, coord % self.__size] = 1.0
+                    elif state == IntersectionState.WHITE:
+                        dest.__board_numpy[1, coord // self.__size, coord % self.__size] = 1.0
+                    else:
+                        dest.__board_numpy[:, coord // self.__size, coord % self.__size] = 0.0
 
     def copy(self) -> 'Position':
         new_pos = Position(self.__size, nn_input=(self.__board_numpy is not None))
@@ -210,7 +232,8 @@ class Position:
 
     def enumerate_empties(self):
         """空き交点を列挙する"""
-        assert(self.__empty_count > 0)
+        if self.__empty_count == 0:
+            return
 
         empties = self.__empties
         coord = (empties & -empties).bit_length() - 1   # 最下位ビットの位置を取得するイディオム
@@ -221,6 +244,21 @@ class Position:
             coord = (empties & -empties).bit_length() - 1
             yield coord
             empties &= empties - 1
+
+    def enumerate_non_empties(self):
+        """空き交点以外の交点を列挙する"""
+        if self.__empty_count == self.__size ** 2:
+            return
+
+        non_empties = ~self.__empties & ((1 << (self.__size ** 2)) - 1)  
+        coord = (non_empties & -non_empties).bit_length() - 1   # 最下位ビットの位置を取得するイディオム
+        non_empties &= non_empties - 1  # 最下位ビットをクリアするイディオム
+        yield coord
+
+        while non_empties != 0:
+            coord = (non_empties & -non_empties).bit_length() - 1
+            yield coord
+            non_empties &= non_empties - 1
 
     def check_winner(self) -> IntersectionState:
         """

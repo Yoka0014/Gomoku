@@ -1,8 +1,4 @@
-import time
-import random
-from gomoku import Position, IntersectionState
-from gtp import GTP
-from uct_engine import UCTEngine
-
-gtp = GTP(UCTEngine())
-gtp.mainloop("uct_log.txt")
+# cudaが有効化されているか確認
+import torch
+if torch.cuda.is_available():
+    print("CUDA is available. Using GPU.")

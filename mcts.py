@@ -80,6 +80,7 @@ class MoveEval:
     effort: float   # この着手に費やされた探索の割合
     simulation_count: int   # この着手に対するシミュレーションの回数
     value: float    # この着手の価値
+    pv: list[int] = None  # 読み筋(Principal Variation)
 
 
 @dataclass
@@ -224,10 +225,28 @@ class Searcher:
 
                 value = root.child_value_sums[i] / root.child_visit_counts[i] if root.child_visit_counts[i] > 0 else 0.0
                 effort = root.child_visit_counts[i] / root.visit_count
-                move_eval = MoveEval(move, effort, root.child_visit_counts[i], value)
+                move_eval = MoveEval(move, effort, root.child_visit_counts[i], value, [move])
+                self.__probe_pv(root.child_nodes[i], move_eval.pv)
                 move_evals.append(move_eval)
 
         return SearchResult(root_value, move_evals)
+    
+    def __probe_pv(self, node: Node, pv: list[int]):
+        """PV(Principal Variation)を探す
+
+            PVとは読み筋のこと
+        """
+        if not node.is_expanded or node.visit_count < 100:
+            return 
+
+        best_idx = 0
+        for i in range(node.num_child_nodes):
+            if node.child_visit_counts[i] > node.child_visit_counts[best_idx]:
+                best_idx = i
+        pv.append(node.moves[best_idx])
+
+        if node.child_nodes is not None and node.child_nodes[best_idx] is not None:
+            self.__probe_pv(node.child_nodes[best_idx], pv)
 
     def __init_root_child_node(self, prev_move: int, prev_prev_move: int):
         pos: Position = self.__root_pos

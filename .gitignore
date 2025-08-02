@@ -1,2 +1,7 @@
 /__pycache__
 *.txt
+*.log
+.python-version
+*.pth
+plot_loss_history.py    
+plot_win_rate_history.py

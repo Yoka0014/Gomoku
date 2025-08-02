@@ -65,9 +65,6 @@ class UCTEngine(Engine):
         if self._pos.empty_count == 1:
             return self._pos.enumerate_empties().__next__()
         
-        if self._pos.empty_count == self._pos.size ** 2:
-            return self._pos.size ** 2 // 2  # 初手天元
-        
         result = self.__searcher.search(self.__simulatioin_count, self.__time_limit_ms)
 
         # GTPの通信と競合するので，探索結果は標準エラー出力に出力する.
@@ -125,7 +122,7 @@ class UCTEngine(Engine):
         s = []
         s.append(f"elapsed={self.__searcher.elapsed_ms}[ms]\t{self.__searcher.simulation_count}[simulations]\t{self.__searcher.pps}[pps]\n")
         s.append(f"win_rate={res.root_value.value * 100:.2f}%\n")
-        s.append("|move|effort|playouts|win_rate|\n")
+        s.append("|move|effort|playouts|win_rate|depth|pv\n")
 
         for eval in sorted(res.move_evals, key=lambda x: x.effort, reverse=True)[:min(self.__num_moves_to_print, len(res.move_evals))]:
             s.append(f"|{self.__coord_to_str(eval.move).rjust(4)}|")
@@ -133,7 +130,12 @@ class UCTEngine(Engine):
             s.append('|')
             s.append(f"{eval.simulation_count:>8}|")
             s.append(f"{eval.value * 100:.2f}%".rjust(8))
-            s.append("|\n")
+            s.append('|')
+            s.append(f"{len(eval.pv):>5}")
+            s.append('|')
+            s.append(" ".join(self.__coord_to_str(c) for c in eval.pv))
+            s.append('\n')
+
 
         return "".join(s)
 
@@ -149,3 +151,20 @@ class UCTEngine(Engine):
             x_chr = chr(ord(x_chr) + 1)
 
         return f"{x_chr}{self.board_size - y}"
+    
+
+if __name__ == "__main__":
+    from gtp import GTP
+    from server_client import ServerClient
+
+    protocol = "gtp"
+    if len(sys.argv) > 1:
+        protocol = sys.argv[1]
+
+    engine = UCTEngine()
+    if protocol == "gtp":
+        gtp = GTP(engine)
+        gtp.mainloop("gtp.log")
+    elif protocol == "server":
+        server_client = ServerClient(engine)
+        server_client.mainloop("server.log")
