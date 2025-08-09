@@ -21,9 +21,11 @@ class Network:
         self.__model.load_state_dict(torch.load(path))
         self.__model = self.__model.to(device)
         self.__model.eval()
+        self.__device = device
 
     def predict(self, batch: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
         with torch.no_grad():
+            batch = batch.to(self.__device)
             p_logit, v_logit = self.__model(batch)
             v = torch.nn.functional.sigmoid(v_logit).cpu().numpy()
         return p_logit.cpu().numpy(), v
@@ -93,7 +95,6 @@ class MoveEval:
     effort: float   # この着手に費やされた探索の割合
     simulation_count: int   # この着手に対するシミュレーションの回数
     prob: float    # この着手のDNNが予測した確率
-    predicted_value: float    # この着手のDNNが予測した価値
     value: float    # 探索の結果得られたこの着手の価値
     pv: list[int] = None  # 読み筋(Principal Variation)
 
@@ -109,6 +110,9 @@ class SearchResult:
 
 @dataclass
 class PUCTConfig:
+    # DNNの出力に対するソフトマックス温度. DNNが出力する方策が決定論的すぎるときは読み抜けを防ぐために高い温度にする
+    softmax_temperature: float = 1.5   
+
     # PUCT式におけるハイパーパラメータ
     # AlphaZeroのPUCT式を参照
     puct_base = 19652.0
@@ -156,7 +160,7 @@ class Searcher:
         ルートノード直下以外の未訪問ノードは, 親ノードの価値で初期化する. 
         そうすれば, 親ノードの価値以上の子ノードがしばらく選ばれ続ける.
     """
-    ___ROOT_FPU = 1.0
+    __ROOT_FPU = 1.0
 
     """
     評価待ちノードに与えるペナルティ.
@@ -166,6 +170,7 @@ class Searcher:
     __VIRTUAL_LOSS = 1
 
     def __init__(self, config: PUCTConfig, network: Network):
+        self.__SOFTMAX_TEMPERATURE_INV = 1/ config.softmax_temperature
         self.__C_BASE = config.puct_base
         self.__C_INIT = config.puct_init
         self.__BATCH_SIZE = config.batch_size
@@ -174,6 +179,7 @@ class Searcher:
         self.__simulation_count = 0
         self.__search_start_ms = 0
         self.__search_end_ms = 0
+        self.__eval_count = 0
 
         self.__root_pos: Position = None
         self.__root: Node = None
@@ -202,7 +208,8 @@ class Searcher:
         Args:
             pos (Position): ルート局面
         """
-        self.__root_pos = pos.copy()
+        self.__root_pos = Position(pos.size, nn_input=True)
+        pos.copy_to(self.__root_pos)
         self.__root = Node()
         self.__init_root_child_nodes()
         gc.collect()
@@ -237,11 +244,12 @@ class Searcher:
     
     def search(self, max_simulation_count: int, time_limit_ms: int) -> SearchResult:
         root_pos = self.__root_pos
-        pos = root_pos.copy()
+        pos = self.__root_pos.copy()
         trajectories: list[list[TrajectoryItem]] = []
         trajectories_discarded: list[list[TrajectoryItem]] = []
         current_time_ms = self.__search_start_ms = int(time.perf_counter() * 1000)
         self.__simulation_count = 0
+        self.__eval_count = 0
 
         stop = lambda: self.__simulation_count >= max_simulation_count or (current_time_ms - self.__search_start_ms) >= time_limit_ms
 
@@ -294,15 +302,11 @@ class Searcher:
                 effort=1.0,
                 simulation_count=root.visit_count,
                 prob=1.0,
-                predicted_value=root.predicted_value,
                 value= root.value
             )
 
         if root.is_expanded:
             for i, move in enumerate(root.moves):
-                if root.child_nodes[i] is None:
-                    continue
-
                 value = root.child_value_sum[i] / root.child_visit_counts[i] if root.child_visit_counts[i] > 0 else 0.0
                 effort = root.child_visit_counts[i] / root.visit_count 
                 move_eval = MoveEval(
@@ -310,11 +314,13 @@ class Searcher:
                     effort=effort,
                     simulation_count=root.child_visit_counts[i],
                     prob=root.policy[i],
-                    predicted_value=root.child_nodes[i].predicted_value,
                     value=value
                 )
                 move_eval.pv = []
-                self.__probe_pv(root.child_nodes[i], move_eval.pv)
+                if root.child_nodes[i] is not None:
+                    self.__probe_pv(root.child_nodes[i], move_eval.pv)
+                else:
+                    move_eval.pv.append(move)
                 move_evals.append(move_eval)
 
         return SearchResult(root_value, move_evals)
@@ -351,7 +357,7 @@ class Searcher:
             pos_tensor = pos_tensor.unsqueeze(0)
             p_logit, value = self.__network.predict(pos_tensor)
 
-            root.policy = Searcher.__softmax(p_logit[0][root.moves])
+            root.policy = self.__softmax(p_logit[0][root.moves])
             root.predicted_value = float(value[0])
 
     def __visit_root_node(self, pos: Position, trajectory: list[TrajectoryItem]) -> VisitResult | float:
@@ -365,7 +371,21 @@ class Searcher:
         node.visit_count += Searcher.__VIRTUAL_LOSS
         node.child_visit_counts[child_idx] += Searcher.__VIRTUAL_LOSS
 
+        current_side = pos.side_to_move
         pos.update(move)
+
+        if pos.is_gameover:
+            # 勝敗が決したら, 直ちにその結果を返す.
+            outcome = 0.0
+            if pos.winner == IntersectionState.EMPTY:
+                outcome = 0.5
+            else:
+                outcome = 1.0 if pos.winner == current_side else 0.0
+
+            self.__update_stats(node, child_idx, outcome)
+
+            return 1.0 - outcome
+
         trajectory.append(TrajectoryItem(node, child_idx))
 
         if node.child_nodes[child_idx] is None:
@@ -374,7 +394,7 @@ class Searcher:
             child_node.expand(pos)
             self.__enqueue_node(pos, child_node)
             return VisitResult.QUEUEING
-        elif node.child_nodes[child_idx].value is None:
+        elif node.child_nodes[child_idx].predicted_value is None:
             # 訪問済みだが評価待ち
             return VisitResult.DISCARDED
         
@@ -430,7 +450,7 @@ class Searcher:
             child_node.expand(pos)
             self.__enqueue_node(pos, child_node)
             return VisitResult.QUEUEING
-        elif node.child_nodes[child_idx].value is None:
+        elif node.child_nodes[child_idx].predicted_value is None:
             # 訪問済みだが評価待ち
             return VisitResult.DISCARDED
         
@@ -442,7 +462,6 @@ class Searcher:
         self.__update_stats(node, child_idx, result)
         return 1.0 - result  
             
-            
 
     def __select_root_child_node(self) -> int:
         parent = self.__root
@@ -450,7 +469,7 @@ class Searcher:
         # 行動価値の計算
         # ただし，未訪問子ノードはFPUで初期化.
         q = np.divide(parent.child_value_sum, parent.child_visit_counts,
-                      out=np.full(parent.num_child_nodes, self.___ROOT_FPU, np.double), where=parent.child_visit_counts != 0)
+                      out=np.full(parent.num_child_nodes, self.__ROOT_FPU, np.double), where=parent.child_visit_counts != 0)
         
         # バイアス項の計算
         if parent.visit_count == 0:
@@ -510,9 +529,10 @@ class Searcher:
         p_logits, values = self.__network.predict(batch)
         
         for i, node in enumerate(self.__predict_queue):
-            node.policy = Searcher.__softmax(p_logits[i][node.moves])
+            node.policy = self.__softmax(p_logits[i][node.moves])
             node.predicted_value = float(values[i])
         
+        self.__eval_count += len(self.__predict_queue)
         self.__predict_queue.clear()
         self.__batch.clear()
 
@@ -553,8 +573,9 @@ class Searcher:
             self.__update_stats(node, child_idx, value)
             value = 1.0 - value
 
-    @staticmethod
-    def __softmax(x: np.ndarray) -> np.ndarray:
+    def __softmax(self, x: np.ndarray) -> np.ndarray:
+        beta = self.__SOFTMAX_TEMPERATURE_INV
+        x = x * beta
         max_x = np.max(x)
         exp_x = np.exp(x - max_x)
         return exp_x / np.sum(exp_x)

@@ -33,7 +33,7 @@ class DQNConfig:
         self.initial_model_path = None  # 初期モデルのパス, Noneならば乱数で初期化
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.board_size = 9
+        self.board_size = 15
         
         self.learning_rate = 0.001
         
@@ -57,7 +57,10 @@ class DQNConfig:
 
         # ReplayBufferの容量. 単位はエピソード.
         # 例えば, 30000ならば, 直近30000エピソード分の経験を保持する.
-        self.replay_buffer_capacity = 30000
+        #
+        # あまり大きくすると学習が遅くなるが，小さすぎても局所解に陥りやすくなる.
+        # 9路盤では30000程度で十分学習が進むが, 15路盤では10倍ほど増やさないと局所解に陥る．
+        self.replay_buffer_capacity = 3 * 10**5
 
         # ReplayBufferにエピソードがwarmup_sizeだけ溜まるまで学習を行わない.
         self.warmup_size = self.batch_size * 100
@@ -67,7 +70,7 @@ class DQNConfig:
         self.epsilon_end = 0.05   # epsilonの最小値
         self.epsilon_decay = 2000  # epsilonの減衰率, 大きくすればするほど減衰速度が遅くなる
 
-        self.model_path = "dqn_model_{0}.pth"  
+        self.model_path = "dqn_model_15_{0}.pth"  
         self.loss_history_path = "loss_history.txt"
         self.win_rate_history_path = "win_rate_history.txt"
         self.save_model_freq = 1000  # モデルを保存する頻度.

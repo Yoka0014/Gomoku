@@ -11,7 +11,7 @@ class Engine(ABC):
         super().__init__()
         self.__name = name
         self.__version = version
-        self._pos = Position(9)
+        self._pos = Position(15)
         self._move_history: list[(IntersectionState, int)] = []
     
     @property

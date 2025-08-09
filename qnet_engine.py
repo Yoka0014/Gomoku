@@ -47,12 +47,9 @@ class QNetworkEngine(Engine):
         move_evals = [(a, outcome_to_win(q[a])) for a in legal_moves]
         move_evals.sort(key=lambda x: x[1], reverse=True)
 
-        self.__print_move_evals(move_evals)
-        p = softmax(move_evals)
+        self.__print_move_evals(move_evals[:10])
 
-        move = np.random.choice([m for m, _ in move_evals], p=p)
-
-        return int(move)
+        return max(move_evals, key=lambda x: x[1])[0]
 
     def __print_move_evals(self, move_evals):
         for move, eval in move_evals:
@@ -80,7 +77,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         protocol = sys.argv[1]
 
-    engine = QNetworkEngine(DQNConfig(), "..\\params\\DQN\\dqn_model_39999.pth")
+    engine = QNetworkEngine(DQNConfig(), "params\\DQN\\dqn_model_15_6999.pth")
     if protocol == "gtp":
         gtp = GTP(engine)
         gtp.mainloop("gtp.log")

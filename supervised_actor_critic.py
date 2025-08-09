@@ -19,9 +19,9 @@ OUTCOME_DRAW = 0.5
 
 class SupervisedActorCriticConfig:
     def __init__(self):
-        self.initial_model_path = "params/DQN/dqn_model_39999.pth"
-        self.train_dataset_path = "data/train_data_qnet.txt"
-        self.test_dataset_path = "data/test_data_qnet.txt"
+        self.initial_model_path = None
+        self.train_dataset_path = "data/train_data.txt"
+        self.test_dataset_path = "data/test_data.txt"
 
         self.model_out_path = "dualnet.pth"
         self.train_loss_history_path = "train_loss_history.txt"

@@ -1,6 +1,7 @@
 """
 対局サーバー用の通信プログラム
 """
+import sys
 import datetime
 
 import gomoku
@@ -18,7 +19,7 @@ class ServerClient:
             'quit': self.__exec_quit_command,
             'pos': self.__exec_pos_command,
             'move': self.__exec_move_command,
-            'genmove': self.__exec_go_command,
+            'go': self.__exec_go_command,
         }
 
     def mainloop(self, log_file_path: str=None):
@@ -92,4 +93,5 @@ class ServerClient:
 
         move = self.__engine.gen_move()
         self.__engine.play(self.__engine.get_side_to_move(), move)
+        print(f"move {move}", file=sys.stdout)
         

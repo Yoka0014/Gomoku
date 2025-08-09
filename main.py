@@ -1,17 +1,16 @@
 from gomoku import Position
 
-win_count = 0
-draw_count = 0
-loss_count = 0
-duplicated = set()
-read = set()
-empty = '-' * 81
-count = 0
-with open("data\\train_data_qnet.txt", "r") as f:
-    for line in f:
-        pos, move, outcome = line.split()
+out_file = "train_data.txt"
+files = ["train_data_1.txt", "train_data_2.txt"]
 
-        if pos == empty and move == "40":
-            count += 1
+with open (out_file, "w") as f:
+    for path in files:
+        with open(path, "r") as infile:
+            for line in infile:
+                f.write(line)
 
-print(count)
+with open (out_file, "r") as f:
+    print(len(f.readlines()))
+
+
+    

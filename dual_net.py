@@ -12,7 +12,7 @@ class DualNet(nn.Module):
 
     2. PV-MCTSにおける探索方策として用いる際は, pを次の手の確率分布P(s, a)とみなす．
     """
-    NUM_LAYERS = 3
+    NUM_LAYERS = 6
 
     def __init__(self, board_size):
         super(DualNet, self).__init__()

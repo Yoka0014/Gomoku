@@ -21,9 +21,9 @@ class GenerationConfig:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.board_size = 9
         self.batch_size = 8192
-        self.num_steps = 20
-        self.out_path = "test_data.txt"
-        self.model_path = "params/DQN/dqn_model_39999.pth"
+        self.num_steps = 200
+        self.out_path = "train_data.txt"
+        self.model_path = "params/DQN/dqn_model_95999.pth"
 
         # 序盤に確率的な手を何手打つか
         self.num_stochastic_moves = 5
