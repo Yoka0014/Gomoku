@@ -29,6 +29,7 @@ class SupervisedActorCriticConfig:
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+        # 訓練データと読み込む際のワーカー数.
         self.num_workers = 8
 
         self.board_size = 9
@@ -39,22 +40,10 @@ class SupervisedActorCriticConfig:
 
         self.max_epoch = 1000
 
-        # テスト損失がpatience回連続して改善しない場合に学習を打ち切る.
+        # テスト損失がpatience回連続して改善しない場合は学習を打ち切る.
         self.patience = 10
 
-        # 方策ヘッドと価値ヘッドのみの学習を行う場合はTrueにする.
-        self.transfer_learning = False
-
         assert(self.initial_model_path is not None or not self.transfer_learning)
-
-    def init_pos(self):
-        """
-        初期局面を生成する.
-        デフォルトはPositionクラスのコンストラクタ.
-
-        この関数を書き換えることで任意局面を初期局面として設定できる.
-        """
-        return Position(self.board_size, nn_input=True)
     
 
 def loss_func(model: DualNet, batch: tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> tuple[float, float, float]:
@@ -63,27 +52,33 @@ def loss_func(model: DualNet, batch: tuple[torch.Tensor, torch.Tensor, torch.Ten
     """
     pos_tensor, move_tensor, outcome_tensor = batch
 
-    p, v_logit = model(pos_tensor)
+    p_logit, v_logit = model(pos_tensor)
     v = nn.functional.sigmoid(v_logit).detach()
 
     value_loss = nn.functional.binary_cross_entropy_with_logits(v_logit.squeeze(1), outcome_tensor)
 
-    log_p = nn.functional.log_softmax(p, dim=1)
-    nll = nn.functional.nll_loss(log_p, move_tensor, reduction='none')
-    advantage = outcome_tensor - v.squeeze(1) + 0.5
-    policy_loss = (nll * advantage).mean()
+    log_p = nn.functional.log_softmax(p_logit, dim=1)
+    cross_entropy = nn.functional.nll_loss(log_p, move_tensor, reduction='none')
 
-    policy_entropy = -torch.sum(log_p * torch.exp(log_p), dim=1).mean()
+    # ネットワークが予測した価値と実際の勝敗の差（アドバンテージ）．
+    advantage = outcome_tensor - v.squeeze(1)
 
-    return policy_loss, value_loss, policy_entropy
+    # クロスエントロピーをアドバンテージで重みづけをする(Actor-Critic)．
+    # これにより負けた対局における着手の確率が低くなる．
+    # ただし，アドバンテージには引き分けの価値を加算する．
+    # これは，不利な局面から負けた場合は，必ずしも悪手を打ったとは限らないので，
+    # その場合の重みを負にしないため．
+    policy_loss = (cross_entropy * (advantage + OUTCOME_DRAW)).mean()
+
+    return policy_loss, value_loss
     
 
 def model_step(model: DualNet, optimizer, batch: tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> tuple[float, float]:
     """
     モデルの1ステップ分の更新を実行し, 方策と価値の損失を返す.
     """
-    policy_loss, value_loss, policy_entropy = loss_func(model, batch)
-    loss = value_loss + policy_loss  
+    policy_loss, value_loss = loss_func(model, batch)
+    loss = value_loss + policy_loss 
 
     optimizer.zero_grad()
     loss.backward()
@@ -104,7 +99,7 @@ def evaluate_model(config: SupervisedActorCriticConfig, model: DualNet, dataload
     with torch.no_grad():
         for batch in dataloader:
             batch = tuple(tensor.to(config.device) for tensor in batch)
-            policy_loss, value_loss, _ = loss_func(model, batch)
+            policy_loss, value_loss = loss_func(model, batch)
 
             total_policy_loss += policy_loss.item()
             total_value_loss += value_loss.item()
